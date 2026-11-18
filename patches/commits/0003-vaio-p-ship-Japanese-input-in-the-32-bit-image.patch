@@ -1,0 +1,88 @@
+From b4465abbd669d35db63b98576d1205097821977e Mon Sep 17 00:00:00 2001
+From: wainohito <wainohito@gmail.com>
+Date: Thu, 19 Nov 2026 02:22:09 +0900
+Subject: [PATCH 3/3] vaio-p: ship Japanese input in the 32-bit image
+
+Add Mozc and TerminalJ+, built for x86_gcc2 from wainohito/mozc (branch
+renkuos-x86_gcc2h) and wainohito/terminalj-plus, and the Noto Sans CJK
+JP fonts, which the nightly profile lacks. The Qt 6 and Qt 5 platform
+plugins with inline input are useful only with Qt installed, so they go
+to ~/Desktop/Mozc-Qt with their installer instead. The image grows to
+1000 MB to hold it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: wainohito <wainohito@gmail.com>
+---
+ build/jam/DefaultBuildProfiles | 49 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/build/jam/DefaultBuildProfiles b/build/jam/DefaultBuildProfiles
+index 70f4e3d6d6..28a838f3ef 100644
+--- a/build/jam/DefaultBuildProfiles
++++ b/build/jam/DefaultBuildProfiles
+@@ -146,7 +146,10 @@ rule DefineDefaultBuildProfiles
+ 			if $(DEBUG) != 0 {
+ 				HAIKU_IMAGE_SIZE ?= 850 ;
+ 			}
+-			HAIKU_IMAGE_SIZE ?= 650 ;
++			# The Japanese input below (Mozc with its dictionary, the Noto
++			# Sans CJK JP fonts and the optional Qt packages) does not fit
++			# in the nightly's 650 MB.
++			HAIKU_IMAGE_SIZE ?= 1000 ;
+ 			HAIKU_NIGHTLY_BUILD = 1 ;
+ 
+ 			AddHaikuImageSystemPackages
+@@ -268,6 +271,50 @@ rule DefineDefaultBuildProfiles
+ 					"HAIKU_PACKAGING_ARCHS is $(HAIKU_PACKAGING_ARCHS)" ;
+ 			}
+ 
++			# Japanese input, built for this x86_gcc2 hybrid from
++			# wainohito/mozc (branch renkuos-x86_gcc2h) and
++			# wainohito/terminalj-plus, and dropped beside the packages above:
++			# Mozc (the gcc 2 relay add-on in the input_server and the method in
++			# lib/x86/mozc), TerminalJ+ (Terminal with inline input), and the
++			# Noto Sans CJK JP fonts, which the nightly profile does not have.
++			# AddPackageFilesToHaikuImage resolves their requirements
++			# (haiku_x86, gcc_x86_syslibs, zlib_x86) against the repository.
++			local renkuJapanesePackages =
++				mozc-3.35.6354-2-x86_gcc2.hpkg
++				terminalj_plus-1.0.0-1-x86_gcc2.hpkg ;
++			SEARCH on $(renkuJapanesePackages)
++				= [ FDirName $(HAIKU_TOP) .. vaio-p-packages ] ;
++
++			# The Qt 6 and Qt 5 platform plugins with inline input. They are
++			# the HaikuPorts qt6_base_x86 and qthaikuplugins_x86 with only that
++			# plugin replaced, and are of use only with Qt installed, which
++			# the image does not have; so they are not installed but left in
++			# ~/Desktop/Mozc-Qt with the installer, which adds them for the Qt
++			# versions that are there.
++			local renkuJapaneseQtFiles =
++				qt6_base_x86-6.10.3.1-1-x86_gcc2.hpkg
++				qthaikuplugins_x86-5.15.16.0.1-1-x86_gcc2.hpkg
++				<mozc-qt>install
++				<mozc-qt>README.txt ;
++			SEARCH on $(renkuJapaneseQtFiles)
++				= [ FDirName $(HAIKU_TOP) .. vaio-p-packages mozc-qt ] ;
++
++			# The packages are built against this tree, so the very first
++			# image of a fresh tree is made without them.
++			if x86_gcc2 in $(HAIKU_PACKAGING_ARCHS) {
++				AddHaikuImageSystemPackages noto_sans_cjk_jp ;
++				if [ Glob [ FDirName $(HAIKU_TOP) .. vaio-p-packages ]
++						: mozc-*-x86_gcc2.hpkg ] {
++					AddPackageFilesToHaikuImage system packages
++						: $(renkuJapanesePackages) ;
++					AddFilesToHaikuImage home Desktop Mozc-Qt
++						: $(renkuJapaneseQtFiles) ;
++				} else {
++					Echo "vaio-p: no Mozc package yet, building the image"
++						"without Japanese input" ;
++				}
++			}
++
+ 			# WebPositive can only built for x86_gcc2, x86 and x86_64
+ 			if $(HAIKU_PACKAGING_ARCHS) in x86_gcc2 x86 x86_64 {
+ 				AddOptionalHaikuImagePackages WebPositive ;
+-- 
+2.53.0
+

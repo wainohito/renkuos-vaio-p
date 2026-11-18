@@ -1,0 +1,82 @@
+From b0171dce2f84b8b71c60bda428e7d9f3b91088af Mon Sep 17 00:00:00 2001
+From: wainohito <wainohito@gmail.com>
+Date: Thu, 19 Nov 2026 02:22:09 +0900
+Subject: [PATCH 2/3] input_server: add the method replicant once the Deskbar
+ runs
+
+Input methods installed in the system are loaded before the Deskbar
+starts, so adding their replicant failed ("Deskbar refuses to add method
+replicant: Bad port ID") and nothing tried again: the Deskbar showed no
+input method icon, and with it no way to see or change the method, until
+it was restarted. B_SOME_APP_LAUNCHED was already watched for, with a
+TODO. When the Deskbar is launched, ask the add-on manager to add the
+replicant a second later, unless the Deskbar restored one itself.
+
+How this was tested: on the 32-bit VAIO P image with Mozc in the system,
+in QEMU: the icon was missing on first boot before, shown after.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: wainohito <wainohito@gmail.com>
+---
+ src/servers/input/InputServer.cpp | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/src/servers/input/InputServer.cpp b/src/servers/input/InputServer.cpp
+index c310803097..fbe8d6bd2f 100644
+--- a/src/servers/input/InputServer.cpp
++++ b/src/servers/input/InputServer.cpp
+@@ -27,6 +27,7 @@
+ #include <FindDirectory.h>
+ #include <Locker.h>
+ #include <Message.h>
++#include <MessageRunner.h>
+ #include <OS.h>
+ #include <Path.h>
+ #include <Roster.h>
+@@ -40,6 +41,10 @@
+ 
+ #include <ServerProtocol.h>
+ 
++
++// Sent to ourselves a little after the Deskbar started.
++static const uint32 kMsgDeskbarLaunched = 'IsDl';
++
+ using std::nothrow;
+ 
+ 
+@@ -577,8 +582,30 @@ InputServer::MessageReceived(BMessage* message)
+ 
+ 		case B_SOME_APP_LAUNCHED:
+ 		{
+-			// The message contains a be:signature with the app signature
+-			// TODO: what's this for?
++			// Input methods are loaded before the Deskbar runs when they are
++			// installed in the system, so adding their replicant failed then
++			// ("Deskbar refuses to add method replicant") and the Deskbar
++			// showed no input method icon until it was restarted. Add it
++			// once the Deskbar is up; it publishes its shelf only after it
++			// registered, so give it a moment.
++			const char* signature;
++			if (message->FindString("be:signature", &signature) == B_OK
++				&& strcasecmp(signature, "application/x-vnd.Be-TSKB") == 0) {
++				BMessage launched(kMsgDeskbarLaunched);
++				BMessageRunner::StartSending(BMessenger(this), &launched,
++					1000000, 1);
++			}
++			return;
++		}
++
++		case kMsgDeskbarLaunched:
++		{
++			// The Deskbar restores a replicant it had itself, which then
++			// registers on its own.
++			if (MethodReplicant() == NULL) {
++				BMessage registration(IS_METHOD_REGISTER);
++				fAddOnManager->PostMessage(&registration);
++			}
+ 			return;
+ 		}
+ 
+-- 
+2.53.0
+
