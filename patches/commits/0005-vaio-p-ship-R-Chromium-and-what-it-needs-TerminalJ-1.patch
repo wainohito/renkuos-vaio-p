@@ -1,0 +1,91 @@
+From f7c84c395a94fed1e7dd4a2326a8567b4f83fe57 Mon Sep 17 00:00:00 2001
+From: wainohito <wainohito@gmail.com>
+Date: Thu, 19 Nov 2026 19:40:06 +0900
+Subject: [PATCH 5/7] vaio-p: ship R Chromium and what it needs, TerminalJ+
+ 1.0.0-2
+
+R Chromium (pkgman.rainygirl.com) with nss_x86, nspr_x86,
+libexecinfo_x86 and util_linux_x86_libuuid, which its package does not
+declare although it does not start without libuuid.so.1. nss_x86 needs
+sqlite_x86 3.53.4, newer than the build repository's, which it
+replaces. TerminalJ+ 1.0.0-2 is executable again. The image grows to
+1250 MB.
+
+How this was tested: on the VAIO P, R Chromium started once
+util_linux_x86_libuuid was installed; in QEMU, from the new image, it
+started and Mozc composed inline in a page.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: wainohito <wainohito@gmail.com>
+---
+ build/jam/DefaultBuildProfiles | 33 ++++++++++++++++++++++++++++-----
+ 1 file changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/build/jam/DefaultBuildProfiles b/build/jam/DefaultBuildProfiles
+index 28a838f3ef..25026af6ab 100644
+--- a/build/jam/DefaultBuildProfiles
++++ b/build/jam/DefaultBuildProfiles
+@@ -147,9 +147,9 @@ rule DefineDefaultBuildProfiles
+ 				HAIKU_IMAGE_SIZE ?= 850 ;
+ 			}
+ 			# The Japanese input below (Mozc with its dictionary, the Noto
+-			# Sans CJK JP fonts and the optional Qt packages) does not fit
+-			# in the nightly's 650 MB.
+-			HAIKU_IMAGE_SIZE ?= 1000 ;
++			# Sans CJK JP fonts and the optional Qt packages) and R Chromium
++			# do not fit in the nightly's 650 MB.
++			HAIKU_IMAGE_SIZE ?= 1250 ;
+ 			HAIKU_NIGHTLY_BUILD = 1 ;
+ 
+ 			AddHaikuImageSystemPackages
+@@ -190,7 +190,8 @@ rule DefineDefaultBuildProfiles
+ 					libiconv_x86@secondary_x86
+ 					ncurses6_x86@secondary_x86
+ 					openssl3_x86@secondary_x86
+-					sqlite_x86@secondary_x86
++					# sqlite_x86 is injected below, in a newer version than
++					# the repository's: nss_x86 for R Chromium needs it.
+ 					zlib_x86@secondary_x86
+ 					zstd_x86@secondary_x86
+ 				}@
+@@ -281,7 +282,7 @@ rule DefineDefaultBuildProfiles
+ 			# (haiku_x86, gcc_x86_syslibs, zlib_x86) against the repository.
+ 			local renkuJapanesePackages =
+ 				mozc-3.35.6354-2-x86_gcc2.hpkg
+-				terminalj_plus-1.0.0-1-x86_gcc2.hpkg ;
++				terminalj_plus-1.0.0-2-x86_gcc2.hpkg ;
+ 			SEARCH on $(renkuJapanesePackages)
+ 				= [ FDirName $(HAIKU_TOP) .. vaio-p-packages ] ;
+ 
+@@ -299,6 +300,28 @@ rule DefineDefaultBuildProfiles
+ 			SEARCH on $(renkuJapaneseQtFiles)
+ 				= [ FDirName $(HAIKU_TOP) .. vaio-p-packages mozc-qt ] ;
+ 
++			# R Chromium (rainygirl's Chromium 114 for x86_gcc2, from
++			# pkgman.rainygirl.com) and what it needs that is not in the
++			# repository the image is built from: nss_x86, nspr_x86,
++			# libexecinfo_x86, and util_linux_x86_libuuid, which its package
++			# does not declare although it cannot start without it. nss_x86
++			# needs sqlite_x86 3.53.4, newer than the repository's 3.50.4;
++			# given here, it is also what python3.14_x86 is resolved against.
++			# The versions are the ones verified on the VAIO P.
++			local vaioPChromiumPackages =
++				rchromium_x86-114.0.5735.199-23-x86_gcc2.hpkg
++				nss_x86-3.133-1-x86_gcc2.hpkg
++				nspr_x86-4.39-1-x86_gcc2.hpkg
++				libexecinfo_x86-1.1-6-x86_gcc2.hpkg
++				util_linux_x86_libuuid-2.34-5-x86_gcc2.hpkg
++				sqlite_x86-3.53.4.0-1-x86_gcc2.hpkg ;
++			SEARCH on $(vaioPChromiumPackages)
++				= [ FDirName $(HAIKU_TOP) .. vaio-p-packages ] ;
++			if x86_gcc2 in $(HAIKU_PACKAGING_ARCHS) {
++				AddPackageFilesToHaikuImage system packages
++					: $(vaioPChromiumPackages) ;
++			}
++
+ 			# The packages are built against this tree, so the very first
+ 			# image of a fresh tree is made without them.
+ 			if x86_gcc2 in $(HAIKU_PACKAGING_ARCHS) {
+-- 
+2.53.0
+

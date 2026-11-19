@@ -1,7 +1,7 @@
-From b0171dce2f84b8b71c60bda428e7d9f3b91088af Mon Sep 17 00:00:00 2001
+From 5c395389422a8c1871f107e233b656be93ff8697 Mon Sep 17 00:00:00 2001
 From: wainohito <wainohito@gmail.com>
 Date: Thu, 19 Nov 2026 02:22:09 +0900
-Subject: [PATCH 2/3] input_server: add the method replicant once the Deskbar
+Subject: [PATCH 2/7] input_server: add the method replicant once the Deskbar
  runs
 
 Input methods installed in the system are loaded before the Deskbar

@@ -1,0 +1,161 @@
+From a4c3e9ddba3910589670c3da3325628b82481254 Mon Sep 17 00:00:00 2001
+From: wainohito <wainohito@gmail.com>
+Date: Thu, 19 Nov 2026 20:42:13 +0900
+Subject: [PATCH 6/7] poulsbo: switch the backlight and the cursor off with
+ DPMS
+
+The backlight went through the generic backlight module of sony_ec,
+which is loaded as a legacy driver, so its modules are not registered
+and get_module() failed: the screen went black but stayed lit, and the
+hardware cursor plane stayed visible. Switch the backlight through LBB,
+in the PCI configuration space of this device (the register sony_ec
+writes too), saving and restoring the level, and switch the cursor
+plane off and back as it was.
+
+How this was tested: on the VAIO P, BScreen::SetDPMS(B_DPMS_OFF) for
+5 seconds and back on: the panel went fully dark, cursor included, and
+came back at its brightness.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: wainohito <wainohito@gmail.com>
+---
+ headers/private/graphics/poulsbo/poulsbo.h    |  4 +--
+ src/add-ons/accelerants/poulsbo/accelerant.c  | 30 ++++++++++++++--
+ .../kernel/drivers/graphics/poulsbo/poulsbo.c | 34 +++++++++++++------
+ 3 files changed, 53 insertions(+), 15 deletions(-)
+
+diff --git a/headers/private/graphics/poulsbo/poulsbo.h b/headers/private/graphics/poulsbo/poulsbo.h
+index 386cb6216f..f3f3b47fce 100644
+--- a/headers/private/graphics/poulsbo/poulsbo.h
++++ b/headers/private/graphics/poulsbo/poulsbo.h
+@@ -58,9 +58,7 @@ typedef struct {
+ 
+ enum {
+ 	POULSBO_GET_PRIVATE_DATA = B_DEVICE_OP_CODES_END + 1,
+-	/* uint32: 1 to switch the panel backlight on, 0 off. Goes to the
+-	   optional backlight module (sony_ec on the VAIO P); B_UNSUPPORTED
+-	   where nothing publishes it. */
++	/* uint32: 1 to switch the panel backlight on, 0 off. */
+ 	POULSBO_SET_BACKLIGHT
+ };
+ 
+diff --git a/src/add-ons/accelerants/poulsbo/accelerant.c b/src/add-ons/accelerants/poulsbo/accelerant.c
+index a4bae413d7..8be6fe275f 100644
+--- a/src/add-ons/accelerants/poulsbo/accelerant.c
++++ b/src/add-ons/accelerants/poulsbo/accelerant.c
+@@ -326,6 +326,28 @@ poulsbo_dpms_mode(void)
+ }
+ 
+ 
++/* The cursor plane stays on screen without the display plane, so it is
++   switched off with it and put back as it was. */
++static uint32 sCursorControlBeforeDPMS;
++static bool sCursorOffForDPMS = false;
++
++
++static void
++set_cursor_plane_for_dpms(bool on)
++{
++	if (!on && !sCursorOffForDPMS) {
++		sCursorControlBeforeDPMS = read32(PSB_CURBCNTR);
++		write32(PSB_CURBCNTR, PSB_CURSOR_MODE_DISABLE);
++		write32(PSB_CURBBASE, read32(PSB_CURBBASE));
++		sCursorOffForDPMS = true;
++	} else if (on && sCursorOffForDPMS) {
++		write32(PSB_CURBCNTR, sCursorControlBeforeDPMS);
++		write32(PSB_CURBBASE, read32(PSB_CURBBASE));
++		sCursorOffForDPMS = false;
++	}
++}
++
++
+ static void
+ set_display_plane(bool on)
+ {
+@@ -352,13 +374,17 @@ poulsbo_set_dpms_mode(uint32 mode)
+ 	if ((mode & poulsbo_dpms_capabilities()) == 0)
+ 		return B_BAD_VALUE;
+ 
+-	if (on)
++	if (on) {
+ 		set_display_plane(true);
++		set_cursor_plane_for_dpms(true);
++	}
+ 	/* Best effort: on a machine whose backlight nobody publishes this fails
+ 	   and only the plane goes dark. */
+ 	ioctl(sDeviceFD, POULSBO_SET_BACKLIGHT, &backlight, sizeof(backlight));
+-	if (!on)
++	if (!on) {
++		set_cursor_plane_for_dpms(false);
+ 		set_display_plane(false);
++	}
+ 
+ 	sDPMSMode = on ? B_DPMS_ON : mode;
+ 	return B_OK;
+diff --git a/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c b/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c
+index cdef4aaadf..1e6bc31be8 100644
+--- a/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c
++++ b/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c
+@@ -14,7 +14,6 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include <drivers/backlight.h>
+ #include <poulsbo.h>
+ 
+ #define TRACE(x...)	dprintf("poulsbo: " x)
+@@ -31,6 +30,12 @@ extern status_t vm_set_area_memory_type(area_id id, phys_addr_t physicalBase,
+ int32 api_version = B_CUR_DRIVER_API_VERSION;
+ 
+ static pci_module_info* sPCI = NULL;
++
++/* The panel backlight: LBB, Legacy Backlight Brightness, in the PCI
++   configuration space of this very device (SCH US15W datasheet; sony_ec,
++   which drives Fn+F5/F6, writes the same register). 0 switches it off. */
++#define PSB_LBB_OFFSET	0xf4
++static int32 sSavedBacklight = -1;
+ static pci_info sPCIInfo;
+ static bool sHasDevice = false;
+ 
+@@ -329,20 +334,29 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
+ 
+ 		case POULSBO_SET_BACKLIGHT:
+ 		{
+-			/* The backlight is not the graphics chip's on this machine: it
+-			   is a chipset register the EC driver owns, as for vesa. */
++			/* Off saves the level and writes 0; on puts the saved level
++			   back, so a brightness set with Fn+F5/F6 survives. The generic
++			   backlight module of sony_ec is not reachable from here: it is
++			   loaded as a legacy driver and its modules are not registered. */
+ 			uint32 on;
+-			backlight_module_info* backlight;
+-			status_t status;
+ 			if (user_memcpy(&on, buffer, sizeof(on)) < B_OK)
+ 				return B_BAD_ADDRESS;
+-			if (get_module(BACKLIGHT_MODULE_NAME,
+-					(module_info**)&backlight) != B_OK) {
++			if (sPCI == NULL)
+ 				return B_UNSUPPORTED;
++			if (on == 0) {
++				if (sSavedBacklight < 0) {
++					sSavedBacklight = sPCI->read_pci_config(sPCIInfo.bus,
++						sPCIInfo.device, sPCIInfo.function, PSB_LBB_OFFSET, 1);
++					sPCI->write_pci_config(sPCIInfo.bus, sPCIInfo.device,
++						sPCIInfo.function, PSB_LBB_OFFSET, 1, 0);
++				}
++			} else if (sSavedBacklight >= 0) {
++				sPCI->write_pci_config(sPCIInfo.bus, sPCIInfo.device,
++					sPCIInfo.function, PSB_LBB_OFFSET, 1,
++					sSavedBacklight);
++				sSavedBacklight = -1;
+ 			}
+-			status = backlight->set_power(on != 0);
+-			put_module(BACKLIGHT_MODULE_NAME);
+-			return status;
++			return B_OK;
+ 		}
+ 
+ 		case POULSBO_GET_PRIVATE_DATA:
+-- 
+2.53.0
+

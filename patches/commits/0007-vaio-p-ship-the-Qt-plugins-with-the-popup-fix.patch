@@ -1,0 +1,33 @@
+From cc125b85398144cc898555b88639d8b3fceeb6ad Mon Sep 17 00:00:00 2001
+From: wainohito <wainohito@gmail.com>
+Date: Thu, 19 Nov 2026 20:42:13 +0900
+Subject: [PATCH 7/7] vaio-p: ship the Qt plugins with the popup fix
+
+qt6_base_x86 6.10.3.2 and qthaikuplugins_x86 5.15.16.0.3 send the input
+method text to the field when a completer popup or a drag window has
+Qt's focus, and recognise text fields of QtWebEngine pages.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: wainohito <wainohito@gmail.com>
+---
+ build/jam/DefaultBuildProfiles | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/build/jam/DefaultBuildProfiles b/build/jam/DefaultBuildProfiles
+index 25026af6ab..eb182eb985 100644
+--- a/build/jam/DefaultBuildProfiles
++++ b/build/jam/DefaultBuildProfiles
+@@ -293,8 +293,8 @@ rule DefineDefaultBuildProfiles
+ 			# ~/Desktop/Mozc-Qt with the installer, which adds them for the Qt
+ 			# versions that are there.
+ 			local renkuJapaneseQtFiles =
+-				qt6_base_x86-6.10.3.1-1-x86_gcc2.hpkg
+-				qthaikuplugins_x86-5.15.16.0.1-1-x86_gcc2.hpkg
++				qt6_base_x86-6.10.3.2-1-x86_gcc2.hpkg
++				qthaikuplugins_x86-5.15.16.0.3-1-x86_gcc2.hpkg
+ 				<mozc-qt>install
+ 				<mozc-qt>README.txt ;
+ 			SEARCH on $(renkuJapaneseQtFiles)
+-- 
+2.53.0
+

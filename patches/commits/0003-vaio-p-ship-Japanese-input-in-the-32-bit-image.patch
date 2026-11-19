@@ -1,7 +1,7 @@
-From b4465abbd669d35db63b98576d1205097821977e Mon Sep 17 00:00:00 2001
+From 828d70a55531b0b85a6c26380676f617586b0eda Mon Sep 17 00:00:00 2001
 From: wainohito <wainohito@gmail.com>
 Date: Thu, 19 Nov 2026 02:22:09 +0900
-Subject: [PATCH 3/3] vaio-p: ship Japanese input in the 32-bit image
+Subject: [PATCH 3/7] vaio-p: ship Japanese input in the 32-bit image
 
 Add Mozc and TerminalJ+, built for x86_gcc2 from wainohito/mozc (branch
 renkuos-x86_gcc2h) and wainohito/terminalj-plus, and the Noto Sans CJK

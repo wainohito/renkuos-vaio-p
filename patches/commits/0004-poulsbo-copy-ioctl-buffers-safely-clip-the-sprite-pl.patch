@@ -1,0 +1,260 @@
+From 65912b074b1117112c5c3402799b5ae20c339311 Mon Sep 17 00:00:00 2001
+From: wainohito <wainohito@gmail.com>
+Date: Thu, 19 Nov 2026 19:40:05 +0900
+Subject: [PATCH 4/7] poulsbo: copy ioctl buffers safely, clip the sprite
+ plane, add DPMS
+
+From rainygirl/renkuos-gma500-driver 5de761b: the driver reads and
+writes the ioctl buffer of the calling process only through
+user_strlcpy()/user_memcpy(), and the sprite plane no longer reads past
+the end of its buffer when its view is cut off the screen.
+
+DPMS: the accelerant only ever reported B_DPMS_ON, so with this driver,
+which replaces vesa on the VAIO P, turning the screen off did nothing,
+and the backlight following DPMS (sony_ec, through the backlight module)
+was lost with vesa. Off, stand-by and suspend now switch the display
+plane off and ask the driver to switch the backlight off through the
+backlight module; on reverses both. The pipe and the panel are left
+alone, as the driver never sets a mode.
+
+How this was tested: built; the DPMS change has not run on the
+hardware yet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: wainohito <wainohito@gmail.com>
+---
+ headers/private/graphics/poulsbo/poulsbo.h    |  8 +-
+ src/add-ons/accelerants/poulsbo/accelerant.c  | 74 ++++++++++++++++---
+ .../kernel/drivers/graphics/poulsbo/poulsbo.c | 42 +++++++++--
+ 3 files changed, 109 insertions(+), 15 deletions(-)
+
+diff --git a/headers/private/graphics/poulsbo/poulsbo.h b/headers/private/graphics/poulsbo/poulsbo.h
+index c22853b72b..386cb6216f 100644
+--- a/headers/private/graphics/poulsbo/poulsbo.h
++++ b/headers/private/graphics/poulsbo/poulsbo.h
+@@ -57,7 +57,11 @@ typedef struct {
+ } poulsbo_private_data;
+ 
+ enum {
+-	POULSBO_GET_PRIVATE_DATA = B_DEVICE_OP_CODES_END + 1
++	POULSBO_GET_PRIVATE_DATA = B_DEVICE_OP_CODES_END + 1,
++	/* uint32: 1 to switch the panel backlight on, 0 off. Goes to the
++	   optional backlight module (sony_ec on the VAIO P); B_UNSUPPORTED
++	   where nothing publishes it. */
++	POULSBO_SET_BACKLIGHT
+ };
+ 
+ /* 디스플레이 레지스터 (파이프 B = 내장 LVDS 패널) */
+@@ -67,6 +71,8 @@ enum {
+ #define PSB_VSYNC_B			0x61014
+ #define PSB_PIPEBSRC		0x6101c
+ #define PSB_PIPEBCONF		0x71008
++#define PSB_DSPBCNTR		0x71180
++#define PSB_DSPBLINOFF		0x71184
+ #define PSB_DSPBSTRIDE		0x71188
+ #define PSB_DSPBSURF		0x7119c
+ #define PSB_CURBCNTR		0x700c0
+diff --git a/src/add-ons/accelerants/poulsbo/accelerant.c b/src/add-ons/accelerants/poulsbo/accelerant.c
+index 7b6f4ab130..a4bae413d7 100644
+--- a/src/add-ons/accelerants/poulsbo/accelerant.c
++++ b/src/add-ons/accelerants/poulsbo/accelerant.c
+@@ -303,24 +303,65 @@ poulsbo_get_pixel_clock_limits(display_mode* mode, uint32* low, uint32* high)
+ }
+ 
+ 
++/* DPMS. The pipe and the panel are left alone: powering them down and up
++   needs the panel power sequence, and this driver never sets a mode. Off,
++   stand-by and suspend switch the display plane off, so the pipe sends
++   black, and the panel backlight off, which is where the power goes on a
++   netbook. Without this the screen saver's "turn off the screen" did
++   nothing at all with this driver: vesa, which it replaces, did both. */
++static uint32 sDPMSMode = B_DPMS_ON;
++
++
+ static uint32
+ poulsbo_dpms_capabilities(void)
+ {
+-	return B_DPMS_ON;
++	return B_DPMS_ON | B_DPMS_STAND_BY | B_DPMS_SUSPEND | B_DPMS_OFF;
+ }
+ 
+ 
+ static uint32
+ poulsbo_dpms_mode(void)
+ {
+-	return B_DPMS_ON;
++	return sDPMSMode;
++}
++
++
++static void
++set_display_plane(bool on)
++{
++	uint32 control = read32(PSB_DSPBCNTR);
++	uint32 wanted = on ? control | PSB_PLANE_ENABLE
++		: control & ~PSB_PLANE_ENABLE;
++	if (wanted == control)
++		return;
++	write32(PSB_DSPBCNTR, wanted);
++	/* The plane registers take effect when the base is written; write back
++	   what is there, as Linux gma500 does. */
++	write32(PSB_DSPBLINOFF, read32(PSB_DSPBLINOFF));
++	write32(PSB_DSPBSURF, read32(PSB_DSPBSURF));
++	(void)read32(PSB_DSPBSURF);
+ }
+ 
+ 
+ static status_t
+ poulsbo_set_dpms_mode(uint32 mode)
+ {
+-	return mode == B_DPMS_ON ? B_OK : B_UNSUPPORTED;
++	const bool on = mode == B_DPMS_ON;
++	uint32 backlight = on ? 1 : 0;
++
++	if ((mode & poulsbo_dpms_capabilities()) == 0)
++		return B_BAD_VALUE;
++
++	if (on)
++		set_display_plane(true);
++	/* Best effort: on a machine whose backlight nobody publishes this fails
++	   and only the plane goes dark. */
++	ioctl(sDeviceFD, POULSBO_SET_BACKLIGHT, &backlight, sizeof(backlight));
++	if (!on)
++		set_display_plane(false);
++
++	sDPMSMode = on ? B_DPMS_ON : mode;
++	return B_OK;
+ }
+ 
+ 
+@@ -587,7 +628,7 @@ poulsbo_allocate_overlay_buffer(color_space space, uint16 width, uint16 height)
+ 	uint32 bytesPerPixel;
+ 	uint32 bytesPerRow;
+ 
+-	if (sOverlayBufferUsed)
++	if (sOverlayBufferUsed || width == 0 || height == 0)
+ 		return NULL;
+ 
+ 	switch (space) {
+@@ -702,7 +743,9 @@ poulsbo_configure_overlay(overlay_token token, const overlay_buffer* buffer,
+ {
+ 	uint32 control;
+ 	uint32 offset;
++	uint32 bytesPerPixel;
+ 	int32 left, top, right, bottom;
++	int32 srcX, srcY;
+ 
+ 	if (token != (overlay_token)&sOverlayTokenUsed
+ 		|| buffer != &sOverlayBuffer)
+@@ -730,17 +773,30 @@ poulsbo_configure_overlay(overlay_token token, const overlay_buffer* buffer,
+ 	if (bottom > (int32)sShared->current_mode.virtual_height)
+ 		bottom = sShared->current_mode.virtual_height;
+ 
+-	offset = (uint32)view->v_start * buffer->bytes_per_row;
++	/* The first source pixel, moved by what is cut off the screen. */
++	bytesPerPixel = buffer->space == B_RGB16 ? 2 : 4;
++	srcX = view->h_start;
++	srcY = view->v_start;
+ 	if (left < 0) {
+-		offset += (uint32)(-left) * (buffer->bytes_per_row / buffer->width);
++		srcX -= left;
+ 		left = 0;
+ 	}
+ 	if (top < 0) {
+-		offset += (uint32)(-top) * buffer->bytes_per_row;
++		srcY -= top;
+ 		top = 0;
+ 	}
+-	offset += (uint32)view->h_start
+-		* (buffer->space == B_RGB16 ? 2 : 4);
++	/* Keep the plane from reading past the end of the buffer - past it,
++	   memory outside the stolen area would be shown on the screen. */
++	if (srcX >= buffer->width || srcY >= buffer->height) {
++		left = right;
++	} else {
++		if (right - left > buffer->width - srcX)
++			right = left + (buffer->width - srcX);
++		if (bottom - top > buffer->height - srcY)
++			bottom = top + (buffer->height - srcY);
++	}
++	offset = (uint32)srcY * buffer->bytes_per_row
++		+ (uint32)srcX * bytesPerPixel;
+ 
+ 	if (left >= right || top >= bottom) {
+ 		if (sSpriteVisible) {
+diff --git a/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c b/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c
+index 566538b3b6..cdef4aaadf 100644
+--- a/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c
++++ b/src/add-ons/kernel/drivers/graphics/poulsbo/poulsbo.c
+@@ -14,6 +14,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#include <drivers/backlight.h>
+ #include <poulsbo.h>
+ 
+ #define TRACE(x...)	dprintf("poulsbo: " x)
+@@ -305,24 +306,55 @@ device_write(void* cookie, off_t position, const void* buffer, size_t* length)
+ }
+ 
+ 
++/* buffer is an address of the process that called ioctl(). Reading or
++   writing it directly from the kernel panics on one bad address, so it is
++   only touched through user_strlcpy/user_memcpy (as intel_extreme does).
++   length can be 0 for the B_GET_* calls, so strings are bounded by
++   B_PATH_NAME_LENGTH. */
+ static status_t
+ device_control(void* cookie, uint32 op, void* buffer, size_t length)
+ {
+ 	switch (op) {
+ 		case B_GET_ACCELERANT_SIGNATURE:
+-			strcpy((char*)buffer, POULSBO_ACCELERANT_NAME);
++			if (user_strlcpy((char*)buffer, POULSBO_ACCELERANT_NAME,
++					B_FILE_NAME_LENGTH) < B_OK)
++				return B_BAD_ADDRESS;
+ 			return B_OK;
+ 
+ 		case B_GET_PATH_FOR_DEVICE:
+-			strcpy((char*)buffer, "/dev/graphics/poulsbo");
++			if (user_strlcpy((char*)buffer, "/dev/graphics/poulsbo",
++					B_PATH_NAME_LENGTH) < B_OK)
++				return B_BAD_ADDRESS;
+ 			return B_OK;
+ 
++		case POULSBO_SET_BACKLIGHT:
++		{
++			/* The backlight is not the graphics chip's on this machine: it
++			   is a chipset register the EC driver owns, as for vesa. */
++			uint32 on;
++			backlight_module_info* backlight;
++			status_t status;
++			if (user_memcpy(&on, buffer, sizeof(on)) < B_OK)
++				return B_BAD_ADDRESS;
++			if (get_module(BACKLIGHT_MODULE_NAME,
++					(module_info**)&backlight) != B_OK) {
++				return B_UNSUPPORTED;
++			}
++			status = backlight->set_power(on != 0);
++			put_module(BACKLIGHT_MODULE_NAME);
++			return status;
++		}
++
+ 		case POULSBO_GET_PRIVATE_DATA:
+ 		{
+-			poulsbo_private_data* data = (poulsbo_private_data*)buffer;
+-			if (data->magic != POULSBO_PRIVATE_MAGIC)
++			poulsbo_private_data data;
++			if (user_memcpy(&data, buffer, sizeof(data)) < B_OK)
++				return B_BAD_ADDRESS;
++			if (data.magic != POULSBO_PRIVATE_MAGIC)
+ 				return B_BAD_VALUE;
+-			data->shared_info_area = sSharedArea;
++			data.shared_info_area = sSharedArea;
++			if (user_memcpy(buffer, &data, sizeof(data)) < B_OK)
++				return B_BAD_ADDRESS;
+ 			return B_OK;
+ 		}
+ 	}
+-- 
+2.53.0
+
